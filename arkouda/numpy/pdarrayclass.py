@@ -179,6 +179,7 @@ __all__ = [
     "argmin",
     "argmax",
     "mean",
+    "min_mean_max",
     "var",
     "std",
     "mink",
@@ -2346,6 +2347,17 @@ class pdarray:
         #   Function is generated at runtime with _make_reduction_func.
         return mean(self, axis=axis, keepdims=keepdims)
 
+    def min_mean_max(self) -> Tuple[numeric_scalars, np.float64, numeric_scalars]:
+        """
+        Return the minimum, mean, and maximum of the array in a single server reduction pass.
+
+        Returns
+        -------
+        Tuple[numeric_scalars, np.float64, numeric_scalars]
+            A tuple ``(min, mean, max)``.
+        """
+        return min_mean_max(self)
+
     def var(
         self,
         ddof: int_scalars = 0,
@@ -3976,6 +3988,46 @@ def _common_index_reduction(
             return result
     else:
         raise TypeError("axis must by of type int.")
+
+
+@typechecked
+def min_mean_max(pda: pdarray) -> Tuple[numeric_scalars, np.float64, numeric_scalars]:
+    """
+    Return ``(min, mean, max)`` for a pdarray using one fused server-side pass.
+
+    Parameters
+    ----------
+    pda : pdarray
+        The pdarray instance to be evaluated.
+    Returns
+    -------
+    Tuple[numeric_scalars, np.float64, numeric_scalars]
+        The minimum, mean, and maximum values.
+    """
+    from arkouda.core.client import generic_msg
+
+    if pda.dtype.name not in ("int64", "uint64", "float64", "bool"):
+        raise TypeError(f"min_mean_max does not support dtype {pda.dtype.name}")
+
+    resp = cast(
+        str,
+        generic_msg(
+            cmd=f"minMeanMaxAll<{pda.dtype.name},{pda.ndim}>",
+            args={"x": pda, "skipNan": False},
+        ),
+    )
+    if resp.startswith("str "):
+        payload = resp[4:]
+        if len(payload) >= 2 and payload[0] == '"' and payload[-1] == '"':
+            payload = payload[1:-1]
+    else:
+        payload = resp
+    vals = json.loads(payload)
+    if not isinstance(vals, list) or len(vals) != 3:
+        raise RuntimeError(f"Unexpected response from minMeanMaxAll: {resp}")
+
+    min_v, mean_v, max_v = vals
+    return (pda.dtype.type(min_v), np.float64(mean_v), pda.dtype.type(max_v))
 
 
 setattr(

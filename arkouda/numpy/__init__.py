@@ -245,6 +245,7 @@ from arkouda.numpy.pdarrayclass import (
     max,
     maxk,
     mean,
+    min_mean_max,
     min,
     mink,
     mod,
