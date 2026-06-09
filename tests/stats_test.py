@@ -46,6 +46,25 @@ class TestStats:
             assert ark.std(ddof=1) == pytest.approx(pand.std())
 
     @pytest.mark.requires_chapel_module("StatsMsg")
+    def test_min_mean_max(self):
+        for ark, npy in zip(self.arks, self.nmps):
+            amin, amean, amax = ak.min_mean_max(ark)
+            assert float(amin) == pytest.approx(float(np.min(npy)))
+            assert float(amean) == pytest.approx(float(np.mean(npy)))
+            assert float(amax) == pytest.approx(float(np.max(npy)))
+
+            mmin, mmean, mmax = ark.min_mean_max()
+            assert float(mmin) == pytest.approx(float(np.min(npy)))
+            assert float(mmean) == pytest.approx(float(np.mean(npy)))
+            assert float(mmax) == pytest.approx(float(np.max(npy)))
+
+        arr = ak.array([1.0, np.nan, 3.0])
+        amin, amean, amax = ak.min_mean_max(arr)
+        assert np.isnan(float(amin))
+        assert np.isnan(float(amean))
+        assert np.isnan(float(amax))
+
+    @pytest.mark.requires_chapel_module("StatsMsg")
     def test_cov_and_corr(self):
         # test that cov and corr variations are equivalent
         for fn in "cov", "corr":

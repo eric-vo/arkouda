@@ -26,6 +26,41 @@ module StatsMsg {
     }
 
     @arkouda.registerCommand()
+    proc minMeanMaxAll(const ref x: [?d] ?t, skipNan: bool): string throws
+      where t == int || t == real || t == uint(64) || t == bool
+    {
+      var minA = max(t),
+          maxA = min(t),
+          sumA: real,
+          countA: int;
+
+      if canBeNan(t) && skipNan {
+        forall a in x with (min reduce minA, max reduce maxA, + reduce sumA, + reduce countA) {
+          if isNan(a) then continue;
+          minA reduce= a;
+          maxA reduce= a;
+          sumA += a:real;
+          countA += 1;
+        }
+
+        if countA == 0 {
+          // Match existing skipNan behavior where all-NaN reductions produce NaN.
+          const nanVal = meanSkipNan(x, d);
+          return formatJson((nanVal, nanVal, nanVal));
+        }
+      } else {
+        forall a in x with (min reduce minA, max reduce maxA, + reduce sumA, + reduce countA) {
+          minA reduce= a;
+          maxA reduce= a;
+          sumA += a:real;
+          countA += 1;
+        }
+      }
+
+      return formatJson((minA, sumA / countA:real, maxA));
+    }
+
+    @arkouda.registerCommand()
     proc mean(const ref x: [?d] ?t, skipNan: bool, axis: list(int)): [] real throws {
       const (valid, axes_) = validateNegativeAxes (axis, d.rank);
       if !valid {
