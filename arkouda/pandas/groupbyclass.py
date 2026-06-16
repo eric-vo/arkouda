@@ -268,6 +268,7 @@ class GroupByReductionType(enum.Enum):
     FIRST = "first"
     MODE = "mode"
     UNIQUE = "unique"
+    MIN_MEAN_MAX = "min_mean_max"
 
     def __str__(self) -> str:
         """
@@ -1304,6 +1305,103 @@ class GroupBy:
             raise TypeError("max is only supported for pdarrays of dtype float64, uint64, and int64")
         k, v = self.aggregate(values, "max", skipna)
         return k, cast(pdarray, v)
+
+    def min_mean_max(self, values: pdarray, skipna: bool = True) -> Tuple[groupable, pdarray, pdarray, pdarray]:
+        """
+        Group another array of values and compute min, mean, and max for each group in one server pass.
+
+        Group using the permutation stored in the GroupBy instance.
+
+        Parameters
+        ----------
+        values : pdarray
+            The values to group and compute stats
+        skipna: bool
+            boolean which determines if NANs should be skipped
+
+        Returns
+        -------
+        Tuple[groupable, pdarray, pdarray, pdarray]
+            unique_keys : (list of) pdarray or Strings
+                The unique keys, in grouped order
+            group_mins : pdarray
+                One minimum per unique key in the GroupBy instance
+            group_means : pdarray, float64
+                One mean value per unique key in the GroupBy instance
+            group_maxs : pdarray
+                One maximum per unique key in the GroupBy instance
+
+        Raises
+        ------
+        TypeError
+            Raised if the values array is not a pdarray object
+        ValueError
+            Raised if the key array size does not match the values size
+        RuntimeError
+            Raised if min_mean_max is not supported for the values dtype
+
+        Notes
+        -----
+        This function computes min, mean, and max in a single server-side pass,
+        which is more efficient than calling min(), mean(), and max() separately.
+        The mean is always returned as float64 dtype.
+
+        Examples
+        --------
+        >>> import arkouda as ak
+        >>> a = ak.randint(1, 5, 10, seed=1)
+        >>> a
+        array([2 4 4 2 1 4 1 2 4 3])
+        >>> g = ak.GroupBy(a)
+        >>> b = ak.randint(1, 10, 10, seed=1)
+        >>> b
+        array([5 7 7 5 2 7 2 5 7 6])
+        >>> keys, mins, means, maxs = g.min_mean_max(b)
+        >>> keys
+        array([1 2 3 4])
+        >>> mins
+        array([2 5 6 7])
+        >>> means
+        array([2.00000000000000000 5.00000000000000000 6.00000000000000000 7.00000000000000000])
+        >>> maxs
+        array([2 5 6 7])
+
+        """
+        from arkouda.core.client import generic_msg
+
+        if values.dtype == bool:
+            raise TypeError("min_mean_max is only supported for pdarrays of dtype float64, uint64, and int64")
+
+        if cast(pdarray, values).size != self.length:
+            raise ValueError("Attempt to group array using key array of different length")
+
+        if self.assume_sorted:
+            permuted_values = cast(pdarray, values)
+        else:
+            permuted_values = cast(pdarray, values)[cast(pdarray, self.permutation)]
+
+        rep_msg = generic_msg(
+            cmd="segmentedReduction",
+            args={
+                "values": permuted_values,
+                "segments": self.segments,
+                "op": "min_mean_max",
+                "skip_nan": skipna,
+                "ddof": 1,
+            },
+        )
+        self.logger.debug(rep_msg)
+
+        # Parse the response: should be "min_name+mean_name+max_name"
+        parts = cast(str, rep_msg).split("+")
+        if len(parts) != 3:
+            raise RuntimeError(f"Unexpected response from min_mean_max reduction: {rep_msg}")
+
+        mins = create_pdarray(cast(str, parts[0]))
+        means = create_pdarray(cast(str, parts[1]))
+        maxs = create_pdarray(cast(str, parts[2]))
+
+        return self.unique_keys, mins, means, maxs
 
     def argmin(self, values: pdarray) -> Tuple[groupable, pdarray]:
         """

@@ -64,6 +64,60 @@ module ReductionMsg
         return ret;
       }
     }
+      /* segMinMeanMax: Compute min, mean, and max of each segment in a single pass.
+         Returns a tuple of three distributed arrays (mins, means, maxs) of the same size as segments.
+       */
+      proc segMinMeanMax(ref values:[] ?t, segments:[?D] int, skipNan=false): ([D] t, [D] real, [D] t) throws {
+        var mins = makeDistArray(D, t);
+        var means = makeDistArray(D, real);
+        var maxs = makeDistArray(D, t);
+      
+        if (D.size == 0) { 
+          return (mins, means, maxs); 
+        }
+      
+        // Initialize mins and maxs with appropriate sentinel values
+        if isRealType(t) {
+          forall i in D {
+            mins[i] = +nan:t;
+            maxs[i] = -nan:t;
+          }
+        } else {
+          forall i in D {
+            mins[i] = max(t);
+            maxs[i] = min(t);
+          }
+        }
+      
+        // Convert to real for mean computation
+        var real_values = makeDistArray(values.domain, real);
+        real_values = values: real;
+      
+        var sums = segSum(real_values, segments, skipNan);
+        var counts = segCount(segments, values.size);
+      
+        if isRealType(t) && skipNan {
+          counts -= nanCounts(real_values, segments);
+        }
+      
+        // Compute min and max in one pass
+        var mins_temp = segMin(values, segments, skipNan);
+        var maxs_temp = segMax(values, segments, skipNan);
+      
+        mins = mins_temp;
+        maxs = maxs_temp;
+      
+        // Compute means
+        forall (i, s, c) in zip(D, sums, counts) {
+          if (c > 0) {
+            means[i] = s:real / c:real;
+          } else {
+            means[i] = 0.0;
+          }
+        }
+      
+        return (mins, means, maxs);
+      }
 
     @arkouda.registerCommand
     proc prodAll(const ref x:[?d] ?t, skipNan: bool): reductionReturnType(t) throws
@@ -571,6 +625,16 @@ module ReductionMsg
                         var res = segTail(values.a, segments.a, n);
                         st.addEntry(rname, createSymEntry(res));
                     }
+                      when "min_mean_max" {
+                        var (mins, means, maxs) = segMinMeanMax(values.a, segments.a);
+                        var min_name = st.nextName();
+                        var mean_name = st.nextName();
+                        var max_name = st.nextName();
+                        st.addEntry(min_name, createSymEntry(mins));
+                        st.addEntry(mean_name, createSymEntry(means));
+                        st.addEntry(max_name, createSymEntry(maxs));
+                        rname = min_name + "+" + mean_name + "+" + max_name;
+                      }
                     otherwise {
                         var errorMsg = notImplementedError(pn,op,gVal.dtype);
                         rmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
@@ -641,6 +705,16 @@ module ReductionMsg
                         var res = segCount(segments.a, values.size);
                         st.addEntry(rname, createSymEntry(res));
                     }
+                      when "min_mean_max" {
+                        var (mins, means, maxs) = segMinMeanMax(values.a, segments.a);
+                        var min_name = st.nextName();
+                        var mean_name = st.nextName();
+                        var max_name = st.nextName();
+                        st.addEntry(min_name, createSymEntry(mins));
+                        st.addEntry(mean_name, createSymEntry(means));
+                        st.addEntry(max_name, createSymEntry(maxs));
+                        rname = min_name + "+" + mean_name + "+" + max_name;
+                      }
                     otherwise {
                         var errorMsg = notImplementedError(pn,op,gVal.dtype);
                         rmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
@@ -695,6 +769,16 @@ module ReductionMsg
                         var res = segCount(segments.a, values.size) - nanCounts(values.a, segments.a);
                         st.addEntry(rname, createSymEntry(res));
                     }
+                      when "min_mean_max" {
+                        var (mins, means, maxs) = segMinMeanMax(values.a, segments.a, skipNan);
+                        var min_name = st.nextName();
+                        var mean_name = st.nextName();
+                        var max_name = st.nextName();
+                        st.addEntry(min_name, createSymEntry(mins));
+                        st.addEntry(mean_name, createSymEntry(means));
+                        st.addEntry(max_name, createSymEntry(maxs));
+                        rname = min_name + "+" + mean_name + "+" + max_name;
+                      }
                     otherwise {
                         var errorMsg = notImplementedError(pn,op,gVal.dtype);
                         rmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);         
