@@ -64,19 +64,19 @@ module ReductionMsg
         return ret;
       }
     }
-      /* segMinMeanMax: Compute min, mean, and max of each segment in a single pass.
+      /* segMinMeanMax: Compute min, mean, and max of each segment.
          Returns a tuple of three distributed arrays (mins, means, maxs) of the same size as segments.
        */
       proc segMinMeanMax(ref values:[] ?t, segments:[?D] int, skipNan=false): ([D] t, [D] real, [D] t) throws {
         var mins = makeDistArray(D, t);
         var means = makeDistArray(D, real);
         var maxs = makeDistArray(D, t);
-      
-        if (D.size == 0) { 
-          return (mins, means, maxs); 
+
+        if (D.size == 0) {
+          return (mins, means, maxs);
         }
-      
-        // Initialize mins and maxs with appropriate sentinel values
+
+        // Sentinels are the output for empty/all-NaN segments.
         if isRealType(t) {
           forall i in D {
             mins[i] = +nan:t;
@@ -88,34 +88,48 @@ module ReductionMsg
             maxs[i] = min(t);
           }
         }
-      
-        // Convert to real for mean computation
-        var real_values = makeDistArray(values.domain, real);
-        real_values = values: real;
-      
-        var sums = segSum(real_values, segments, skipNan);
-        var counts = segCount(segments, values.size);
-      
-        if isRealType(t) && skipNan {
-          counts -= nanCounts(real_values, segments);
-        }
-      
-        // Compute min and max in one pass
-        var mins_temp = segMin(values, segments, skipNan);
-        var maxs_temp = segMax(values, segments, skipNan);
-      
-        mins = mins_temp;
-        maxs = maxs_temp;
-      
-        // Compute means
-        forall (i, s, c) in zip(D, sums, counts) {
-          if (c > 0) {
-            means[i] = s:real / c:real;
+
+        // Each element carries:
+        // (resetAtSegmentStart, hasValid, min, sum, max, count)
+        var flagvalues = makeDistArray(values.domain, (bool, bool, t, real, t, int));
+        forall (fv, v) in zip(flagvalues, values) {
+          if isRealType(t) && skipNan && isNan(v) {
+            fv = (false, false, 0:t, 0.0, 0:t, 0);
           } else {
-            means[i] = 0.0;
+            fv = (false, true, v, v:real, v, 1);
           }
         }
-      
+
+        forall s in segments with (var agg = newDstAggregator(bool)) {
+          agg.copy(flagvalues[s][0], true);
+        }
+
+        const scanresult = ResettingMinMeanMaxScanOp scan flagvalues;
+
+        forall (i, mn, mu, mx, low) in zip(D, mins, means, maxs, segments)
+          with (var minAgg = newSrcAggregator(t),
+                var meanAgg = newDstAggregator(real),
+                var maxAgg = newSrcAggregator(t)) {
+          var vi: int;
+          if (i < D.high) {
+            vi = segments[i+1] - 1;
+          } else {
+            vi = values.domain.high;
+          }
+
+          if (vi >= low) {
+            const stats = scanresult[vi];
+            const hasValid = stats(1);
+            if hasValid {
+              minAgg.copy(mn, stats(2));
+              maxAgg.copy(mx, stats(4));
+              meanAgg.copy(mu, stats(3) / stats(5):real);
+            } else {
+              meanAgg.copy(mu, 0.0);
+            }
+          }
+        }
+
         return (mins, means, maxs);
       }
 
@@ -625,7 +639,7 @@ module ReductionMsg
                         var res = segTail(values.a, segments.a, n);
                         st.addEntry(rname, createSymEntry(res));
                     }
-                      when "min_mean_max" {
+                    when "min_mean_max" {
                         var (mins, means, maxs) = segMinMeanMax(values.a, segments.a);
                         var min_name = st.nextName();
                         var mean_name = st.nextName();
@@ -633,8 +647,12 @@ module ReductionMsg
                         st.addEntry(min_name, createSymEntry(mins));
                         st.addEntry(mean_name, createSymEntry(means));
                         st.addEntry(max_name, createSymEntry(maxs));
-                        rname = min_name + "+" + mean_name + "+" + max_name;
-                      }
+                        var repMsg = "created " + st.attrib(min_name)
+                                    + "+created " + st.attrib(mean_name)
+                                    + "+created " + st.attrib(max_name);
+                        rmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                        return new MsgTuple(repMsg, MsgType.NORMAL);
+                    }
                     otherwise {
                         var errorMsg = notImplementedError(pn,op,gVal.dtype);
                         rmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
@@ -705,7 +723,7 @@ module ReductionMsg
                         var res = segCount(segments.a, values.size);
                         st.addEntry(rname, createSymEntry(res));
                     }
-                      when "min_mean_max" {
+                    when "min_mean_max" {
                         var (mins, means, maxs) = segMinMeanMax(values.a, segments.a);
                         var min_name = st.nextName();
                         var mean_name = st.nextName();
@@ -713,8 +731,12 @@ module ReductionMsg
                         st.addEntry(min_name, createSymEntry(mins));
                         st.addEntry(mean_name, createSymEntry(means));
                         st.addEntry(max_name, createSymEntry(maxs));
-                        rname = min_name + "+" + mean_name + "+" + max_name;
-                      }
+                        var repMsg = "created " + st.attrib(min_name)
+                                   + "+created " + st.attrib(mean_name)
+                                   + "+created " + st.attrib(max_name);
+                        rmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                        return new MsgTuple(repMsg, MsgType.NORMAL);
+                    }
                     otherwise {
                         var errorMsg = notImplementedError(pn,op,gVal.dtype);
                         rmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);
@@ -769,7 +791,7 @@ module ReductionMsg
                         var res = segCount(segments.a, values.size) - nanCounts(values.a, segments.a);
                         st.addEntry(rname, createSymEntry(res));
                     }
-                      when "min_mean_max" {
+                    when "min_mean_max" {
                         var (mins, means, maxs) = segMinMeanMax(values.a, segments.a, skipNan);
                         var min_name = st.nextName();
                         var mean_name = st.nextName();
@@ -777,8 +799,12 @@ module ReductionMsg
                         st.addEntry(min_name, createSymEntry(mins));
                         st.addEntry(mean_name, createSymEntry(means));
                         st.addEntry(max_name, createSymEntry(maxs));
-                        rname = min_name + "+" + mean_name + "+" + max_name;
-                      }
+                        var repMsg = "created " + st.attrib(min_name)
+                                   + "+created " + st.attrib(mean_name)
+                                   + "+created " + st.attrib(max_name);
+                        rmLogger.debug(getModuleName(),getRoutineName(),getLineNumber(),repMsg);
+                        return new MsgTuple(repMsg, MsgType.NORMAL);
+                    }
                     otherwise {
                         var errorMsg = notImplementedError(pn,op,gVal.dtype);
                         rmLogger.error(getModuleName(),getRoutineName(),getLineNumber(),errorMsg);         
@@ -1070,6 +1096,82 @@ module ReductionMsg
 
       proc clone() {
         return new unmanaged ResettingPlusScanOp(eltType=eltType);
+      }
+    }
+
+    /* Performs a segmented scan where each element tracks
+     * (hasValid, min, sum, max, count) and segment boundaries reset state.
+     */
+    class ResettingMinMeanMaxScanOp: ReduceScanOp {
+      type eltType;
+      var value: eltType;
+
+      proc identity {
+        return (false, false, 0:eltType(2), 0.0, 0:eltType(4), 0);
+      }
+
+      proc combineStats(hasValidA, minA, sumA, maxA, countA,
+                        hasValidB, minB, sumB, maxB, countB) {
+        if hasValidA {
+          if hasValidB {
+            return (true, min(minA, minB), sumA + sumB, max(maxA, maxB), countA + countB);
+          } else {
+            return (true, minA, sumA, maxA, countA);
+          }
+        } else {
+          if hasValidB {
+            return (true, minB, sumB, maxB, countB);
+          } else {
+            return (false, minA, sumA, maxA, countA);
+          }
+        }
+      }
+
+      proc accumulate(x) {
+        const (resetB, hasValidB, minB, sumB, maxB, countB) = x;
+        const (hasResetA, hasValidA, minA, sumA, maxA, countA) = value;
+
+        if resetB {
+          value = (hasResetA | resetB, hasValidB, minB, sumB, maxB, countB);
+        } else {
+          const (hasValid, mn, sm, mx, ct) = combineStats(hasValidA, minA, sumA, maxA, countA,
+                                                           hasValidB, minB, sumB, maxB, countB);
+          value = (hasResetA | resetB, hasValid, mn, sm, mx, ct);
+        }
+      }
+
+      proc accumulateOntoState(ref state, x) {
+        const (prevReset, hasValidB, minB, sumB, maxB, countB) = x;
+        const (hasResetA, hasValidA, minA, sumA, maxA, countA) = state;
+
+        if hasResetA {
+          state = (hasResetA | prevReset, hasValidA, minA, sumA, maxA, countA);
+        } else {
+          const (hasValid, mn, sm, mx, ct) = combineStats(hasValidA, minA, sumA, maxA, countA,
+                                                           hasValidB, minB, sumB, maxB, countB);
+          state = (hasResetA | prevReset, hasValid, mn, sm, mx, ct);
+        }
+      }
+
+      proc combine(x) {
+        const (xHasReset, hasValidB, minB, sumB, maxB, countB) = x.value;
+        const (hasResetA, hasValidA, minA, sumA, maxA, countA) = value;
+
+        if hasResetA {
+          value = (hasResetA | xHasReset, hasValidA, minA, sumA, maxA, countA);
+        } else {
+          const (hasValid, mn, sm, mx, ct) = combineStats(hasValidA, minA, sumA, maxA, countA,
+                                                           hasValidB, minB, sumB, maxB, countB);
+          value = (hasResetA | xHasReset, hasValid, mn, sm, mx, ct);
+        }
+      }
+
+      proc generate() {
+        return value;
+      }
+
+      proc clone() {
+        return new unmanaged ResettingMinMeanMaxScanOp(eltType=eltType);
       }
     }
 
