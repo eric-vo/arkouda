@@ -275,7 +275,6 @@ from arkouda.numpy import (
     maximum,
     may_share_memory,
     mean,
-    min_mean_max,
     median,
     min,
     minimum,

@@ -13,7 +13,6 @@ module StatsMsg {
     use IOUtils;
     use List;
     use Map;
-    use Time;
 
     private config const logLevel = ServerConfig.logLevel;
     private config const logChannel = ServerConfig.logChannel;
@@ -24,53 +23,6 @@ module StatsMsg {
       if canBeNan(t) && skipNan
           then return meanSkipNan(x, d);
           else return (+ reduce x:real) / x.size:real;
-    }
-
-    @arkouda.registerCommand()
-    proc minMeanMaxAll(const ref x: [?d] ?t, skipNan: bool): string throws
-      where t == int || t == real || t == uint(64) || t == bool
-    {
-      var st: stopwatch;
-      st.start();
-      if canBeNan(t) && skipNan {
-        var minA = max(real);
-        var maxA = min(real);
-        var sumA: real = 0.0;
-        var countA: int = 0;
-
-        forall a in x with (min reduce minA, max reduce maxA, + reduce sumA, + reduce countA) {
-          if isNan(a) then continue;
-          minA reduce= a;
-          maxA reduce= a;
-          sumA += a:real;
-          countA += 1;
-        }
-
-        if countA == 0 {
-          // Match existing skipNan behavior where all-NaN reductions produce NaN.
-          const nanVal = meanSkipNan(x, d);
-          return formatJson((nanVal, nanVal, nanVal));
-        }
-
-        sLogger.debug(
-          getModuleName(),
-          getRoutineName(),
-          getLineNumber(),
-          "minMeanMaxAll elapsed: %?".format(st.elapsed())
-        );
-        return formatJson((minA, sumA / countA:real, maxA));
-      } else {
-        const minA = min reduce x;
-        const maxA = max reduce x;
-        const sumA = + reduce x:real;
-        sLogger.debug(
-          getModuleName(),
-          getRoutineName(),
-          getLineNumber(),
-          "minMeanMaxAll elapsed: %?".format(st.elapsed())
-        );
-        return formatJson((minA, sumA / x.size:real, maxA));
-      }
     }
 
     @arkouda.registerCommand()
